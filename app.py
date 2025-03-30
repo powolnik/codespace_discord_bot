@@ -13,12 +13,13 @@ import numpy as np # Add this line
 import io # Add this line
 import wave # Add this line
 import audioop # Add this line
+import webrtcvad # Add this line
 
 # --- Configuration and Setup ---
 load_dotenv()
-bot_token = os.environ.get('BOT_TOKEN') #'MTMzODQ4NTY2MzY3MDA3OTQ4OA.Gc27cI.RHEcr8wmPrKCSQk2hAA4O3THNZTMB0eTI1EBII'
+bot_token = os.environ.get('BOT_TOKEN')
 gemini_api_key = os.environ.get('GEMINI_API_KEY')
-chat_channel_name = 'free-chat-unstable' #os.environ.get('CHAT_CHANNEL_NAME') 
+chat_channel_name = os.environ.get('CHAT_CHANNEL_NAME')
 
 if bot_token is None:
     print("Error: Bot token not found. Set BOT_TOKEN environment variable.")
@@ -38,9 +39,21 @@ intents.voice_states = True # Add this line for voice channel events/state track
 # --- Use commands.Bot consistently ---
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# --- Whisper Configuration ---
+WHISPER_MODEL_NAME = os.environ.get('WHISPER_MODEL_NAME', 'tiny') # Default to 'tiny' if not set
+try:
+    # Default to 2 seconds if not set or invalid integer
+    BUFFER_DURATION_SECONDS = int(os.environ.get('BUFFER_DURATION_SECONDS', '2'))
+except ValueError:
+    print("Warning: Invalid BUFFER_DURATION_SECONDS environment variable. Using default: 2 seconds.")
+    BUFFER_DURATION_SECONDS = 2
+
+print(f"Using Whisper Model: {WHISPER_MODEL_NAME}")
+print(f"Using Transcription Buffer Duration: {BUFFER_DURATION_SECONDS} seconds")
+# --- End Whisper Configuration ---
+
 # --- Load Whisper Model ---
 # Models: tiny, base, small, medium, large. Larger models are more accurate but slower and require more resources.
-WHISPER_MODEL_NAME = "tiny"
 print(f"Loading Whisper model: {WHISPER_MODEL_NAME}...")
 try:
     whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
@@ -143,14 +156,6 @@ async def play_audio_in_vc(voice_channel: discord.VoiceChannel, audio_path: str,
             await vc.disconnect()  # Ensure disconnection
 
 
-async def handle_transcription(user: discord.User, text: str):
-    """Callback function to handle the transcribed text."""
-    if text and text.strip(): # Avoid printing empty transcriptions
-        print(f"Transcription for {user.name} ({user.id}): {text.strip()}")
-    else:
-        print(f"Received empty transcription for {user.name} ({user.id})")
-# End of callback function
-
 
 # Add the WhisperSink class definition:
 class WhisperSink(Sink):
@@ -164,22 +169,30 @@ class WhisperSink(Sink):
     # Whisper expects 16kHz, single-channel (mono), float32 audio.
     WHISPER_SAMPLE_RATE = 16000
 
-    # Buffer audio for this many seconds before transcribing
-    BUFFER_DURATION_SECONDS = 2
-
-    # Calculate buffer size limit in bytes
+    # Calculate buffer size limit in bytes using the configured duration
     BUFFER_LIMIT_BYTES = (
-        DISCORD_SAMPLE_RATE * DISCORD_CHANNELS * DISCORD_BYTES_PER_SAMPLE * BUFFER_DURATION_SECONDS
+        DISCORD_SAMPLE_RATE * DISCORD_CHANNELS * DISCORD_BYTES_PER_SAMPLE * BUFFER_DURATION_SECONDS # Use global variable
     )
 
-    def __init__(self, transcription_callback):
+    def __init__(self, output_channel: discord.TextChannel):
         super().__init__()
         self.user_audio_buffers = {}  # Stores bytes data per user ID
-        self.transcription_callback = transcription_callback
+        self.output_channel = output_channel
         self.loop = asyncio.get_running_loop()
-        print(f"WhisperSink initialized. Buffering for {self.BUFFER_DURATION_SECONDS} seconds.")
+        print(f"WhisperSink initialized. Buffering for {BUFFER_DURATION_SECONDS} seconds. Outputting to #{output_channel.name}")
         if not whisper_model:
              print("WARNING: Whisper model not loaded. Sink will not transcribe.")
+
+        # Initialize VAD
+        self.vad_aggressiveness = 2  # Default aggressiveness level
+        self.vad = webrtcvad.Vad(mode=self.vad_aggressiveness)
+        self.frame_duration = 30  # ms
+        self.bytes_per_frame = int(WhisperSink.WHISPER_SAMPLE_RATE * self.frame_duration / 1000 * 2)
+        self.last_speech_timestamp = None  # Track last speech
+        print(f"VAD initialized with aggressiveness {self.vad_aggressiveness}, frame duration {self.frame_duration}ms")
+
+        self.BUFFER_DURATION_SECONDS = 2  # seconds
+        self.BUFFER_LIMIT_BYTES = 48000 * 2 * 2 * self.BUFFER_DURATION_SECONDS # 48kHz, 16-bit, stereo
 
     def write(self, data, user):
         """Called by discord.py when audio data is received."""
@@ -187,62 +200,34 @@ class WhisperSink(Sink):
             return
 
         if user.id not in self.user_audio_buffers:
-            self.user_audio_buffers[user.id] = io.BytesIO()
-            # print(f"Created buffer for user {user.id}")
+            self.user_audio_buffers[user.id] = bytearray() # Use bytearray for efficient appending
 
         buffer = self.user_audio_buffers[user.id]
-        buffer.write(data)
+        buffer.extend(data)
 
-        # Check if buffer exceeds duration limit
-        if buffer.tell() >= self.BUFFER_LIMIT_BYTES:
-            # print(f"Buffer limit reached for user {user.id}. Scheduling transcription.")
-            # Get buffered data, create a copy for processing
-            buffer.seek(0)
-            audio_data_copy = buffer.read()
+        # --- Process for Silence Detection ---
+        self.process_silence_detection(user)
 
-            # Clear the buffer for this user immediately
-            buffer.seek(0)
-            buffer.truncate()
+        # --- Time-based buffer check (existing logic) ---
+        if len(buffer) >= self.BUFFER_LIMIT_BYTES:
+            print(f"Buffer limit reached for user {user.id}. Triggering transcription.")
+            self.trigger_transcription(user)
 
-            # Schedule transcription task (don't block the write method)
-            self.loop.create_task(self.process_transcription(audio_data_copy, user))
-
-    async def process_transcription(self, pcm_data: bytes, user: discord.User):
-        """Converts audio and runs transcription in an executor."""
+    async def transcribe_audio(self, user):
+        """Transcribes the accumulated audio data for a user."""
         try:
-            # 1. Convert stereo PCM to mono PCM
-            # audioop requires width (bytes per sample), rate, data, and state
-            mono_data, _ = audioop.ratecv(pcm_data, self.DISCORD_BYTES_PER_SAMPLE, self.DISCORD_CHANNELS,
-                                          self.DISCORD_SAMPLE_RATE, self.WHISPER_SAMPLE_RATE, None)
-            # After ratecv, data is still stereo if input was stereo, but at the new rate.
-            # Now convert to mono.
-            mono_data = audioop.tomono(mono_data, self.DISCORD_BYTES_PER_SAMPLE, 1, 1) # Average left and right channels
-
-            # 2. Convert bytes to NumPy array (int16)
-            audio_np = np.frombuffer(mono_data, dtype=np.int16)
-
-            # 3. Convert int16 to float32 and normalize
-            audio_fp32 = audio_np.astype(np.float32) / 32768.0 # Max value for int16 is 32767
-
-            # 4. Run transcription in executor
-            # print(f"Running transcription for user {user.id}...")
-            result = await self.loop.run_in_executor(
-                None,  # Default executor
-                lambda: whisper_model.transcribe(audio_fp32, language="en", fp16=False) # fp16=False for CPU
-            )
-            transcribed_text = result.get("text", "")
-            # print(f"Transcription complete for user {user.id}.")
-
-            # 5. Call the callback with the result
-            await self.transcription_callback(user, transcribed_text)
-
+            audio_data = self.user_audio_buffers[user.id]
+            # Convert to numpy array and transcribe
+            result = whisper_model.transcribe(audio_data) # Pass raw bytes
+            text = result["text"]
+            if text:
+                await self.output_channel.send(f"**{user.name}**: {text}")
         except Exception as e:
-            print(f"Error during transcription processing for user {user.id}: {e}")
-            # Optionally call callback with an error message
-            # await self.transcription_callback(user, "[Transcription Error]")
+            print(f"Error transcribing audio for {user.name}: {e}")
+            await self.output_channel.send(f"Error transcribing audio from {user.name}.")
 
     def cleanup(self):
-        """Called when the sink is stopped (e.g., on disconnect)."""
+        """Called when the sink is stopped."""
         print("WhisperSink cleanup called.")
         # Clear any remaining buffered data
         for user_id, buffer in self.user_audio_buffers.items():
@@ -377,6 +362,13 @@ async def listen(ctx):
         await ctx.send("You need to be in a voice channel to use this command.")
         return
 
+    # Add this check:
+    if not whisper_model:
+        await ctx.send("Sorry, the speech transcription model failed to load. Listening is currently unavailable.")
+        print("!listen command aborted: Whisper model not loaded.")
+        return
+    # End of added check
+
     voice_channel = ctx.author.voice.channel
     guild = ctx.guild
     vc = discord.utils.get(bot.voice_clients, guild=guild) # Get current voice client
@@ -389,7 +381,7 @@ async def listen(ctx):
                 if not vc.is_listening():
                      # Replace BasicSink with WhisperSink:
                      # vc.listen(BasicSink())
-                     vc.listen(WhisperSink(handle_transcription)) # Pass callback
+                     vc.listen(WhisperSink(ctx.channel)) # Pass callback
                      print(f"Restarted listening in {voice_channel.name}")
                 return
             else:
@@ -408,7 +400,7 @@ async def listen(ctx):
              print("Starting listener...")
              # Replace BasicSink with WhisperSink:
              # vc.listen(BasicSink())
-             vc.listen(WhisperSink(handle_transcription)) # Pass callback
+             vc.listen(WhisperSink(ctx.channel)) # Pass callback
         elif vc:
              print("Listener already active.")
 
