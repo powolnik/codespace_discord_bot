@@ -16,9 +16,9 @@ import audioop # Add this line
 
 # --- Configuration and Setup ---
 load_dotenv()
-bot_token = 'MTMzODQ4NTY2MzY3MDA3OTQ4OA.Gc27cI.RHEcr8wmPrKCSQk2hAA4O3THNZTMB0eTI1EBII' #os.environ.get('BOT_TOKEN')
+bot_token = os.environ.get('BOT_TOKEN') #'MTMzODQ4NTY2MzY3MDA3OTQ4OA.Gc27cI.RHEcr8wmPrKCSQk2hAA4O3THNZTMB0eTI1EBII'
 gemini_api_key = os.environ.get('GEMINI_API_KEY')
-chat_channel_name = 'free-chat-unstable' #os.environ.get('CHAT_CHANNEL_NAME')
+chat_channel_name = os.environ.get('CHAT_CHANNEL_NAME') #'free-chat-unstable' 
 
 if bot_token is None:
     print("Error: Bot token not found. Set BOT_TOKEN environment variable.")
