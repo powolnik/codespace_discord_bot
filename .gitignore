@@ -1,3 +1,4 @@
 .aider*
 .env
 .vscode/
+/workspaces/codespace_discord_bot/samples/
