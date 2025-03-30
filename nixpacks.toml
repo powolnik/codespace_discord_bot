@@ -1,37 +1,7 @@
-                                                                                                                                                                                                                     
-# This file configures the Nixpacks build process on Railway.                                                                                                                                                         
-# It ensures necessary system packages are available for the Python environment.                                                                                                                                      
-                                                                                                                                                                                                                      
-# Specify the language providers Nixpacks should use.                                                                                                                                                                 
-# 'python' is needed for your Discord bot written in Python.                                                                                                                                                          
-providers = ["python"]                                                                                                                                                                                                
-                                                                                                                                                                                                                      
-[phases.setup]                                                                                                                                                                                                        
-# Add required system packages using Nix packages.                                                                                                                                                                    
-# '...' ensures that default packages for the 'python' provider are still included.                                                                                                                                   
-# 'ffmpeg': Needed for audio processing (used by pydub, whisper, etc.).                                                                                                                                               
-# 'opus': Required by discord.py (specifically libopus) for voice communication.                                                                                                                                      
-# 'libsodium': Required by PyNaCl, a dependency for discord.py voice encryption.                                                                                                                                      
-# 'libsndfile': Required by soundfile/sounddevice for reading/writing audio file formats.                                                                                                                             
-# 'zlib', 'libjpeg', 'libpng', 'freetype': Common dependencies for Pillow (image processing).                                                                                                                         
-# 'openblas': Provides BLAS/LAPACK implementations needed by numpy/scipy.                                                                                                                                             
-# 'zeromq': Required by pyzmq.                                                                                                                                                                                        
-nixPkgs = [                                                                                                                                                                                                           
-    "...",                                                                                                                                                                                                            
-    "ffmpeg",                                                                                                                                                                                                         
-    "opus",                                                                                                                                                                                                           
-    "libsodium",                                                                                                                                                                                                      
-    "libsndfile",                                                                                                                                                                                                     
-    "zlib",                                                                                                                                                                                                           
-    "libjpeg",                                                                                                                                                                                                        
-    "libpng",                                                                                                                                                                                                         
-    "freetype",                                                                                                                                                                                                       
-    "openblas",                                                                                                                                                                                                       
-    "zeromq"                                                                                                                                                                                                          
-]                                                                                                                                                                                                                     
-                                                                                                                                                                                                                      
-# Nixpacks usually detects requirements.txt (or similar) automatically                                                                                                                                                
-# and runs pip install during the 'install' phase.                                                                                                                                                                    
-# You typically don't need to define the 'install' or 'start' phases here                                                                                                                                             
-# unless you need custom commands. Railway's default start command detection                                                                                                                                          
-# or the start command set in your railway.toml/dashboard will be used.  
+# nixpacks.toml
+
+[phases.setup]
+nixPkgs = ["ffmpeg", "ffmpeg-headless", "freetype", "gcc", "libjpeg", "libpng", "libsndfile", "libsodium", "openblas", "libopus", "python3", "zeromq", "zlib"]
+# Or potentially just "opus" if using a newer nixpkgs version, see Solution 2
+
+# Add other phases (install, build, start) as needed
