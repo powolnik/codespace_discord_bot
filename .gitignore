@@ -2,3 +2,7 @@
 .env
 .vscode/
 /workspaces/codespace_discord_bot/samples/
+samples/CONVENTIONS.md
+samples/PLAN.md
+samples/sample.aider.conf.yml
+samples/TASKS.md
