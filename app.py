@@ -18,6 +18,7 @@ import audioop # Add this line
 load_dotenv()
 bot_token = os.environ.get('BOT_TOKEN')
 gemini_api_key = os.environ.get('GEMINI_API_KEY')
+chat_channel_name = os.environ.get('CHAT_CHANNEL_NAME')
 
 if bot_token is None:
     print("Error: Bot token not found. Set BOT_TOKEN environment variable.")
@@ -438,13 +439,13 @@ async def stoplisten(ctx):
 
 @bot.event
 async def on_message(message):
-    """Responds to messages in the 'discussion' channel using Gemini."""
+    """Responds to messages in the chat_channel_name channel using Gemini."""
     # Ignore messages sent by the bot itself
     if message.author == bot.user:
         return
 
-    # Check if the message is in the 'discussion' channel
-    if message.channel.name == 'discussion':
+    # Check if the message is in the chat_channel_name channel
+    if message.channel.name == chat_channel_name:
         print(f"Received message in #discussion from {message.author}: '{message.content}'")
 
         # Get the event loop
@@ -455,7 +456,7 @@ async def on_message(message):
             response_text = await loop.run_in_executor(None, get_gemini_response, prompt)
             print(f"Gemini response for #discussion: {response_text[:200]}...")
 
-            # Send the response back to the 'discussion' channel
+            # Send the response back to the chat_channel_name channel
             if response_text:
                 chunked_response = split_string(response_text, 1950)
                 for chunk in chunked_response:
