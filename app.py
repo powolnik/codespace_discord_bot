@@ -125,27 +125,18 @@ async def play_audio_in_vc(voice_channel: discord.VoiceChannel, audio_path: str,
 
         # Add these lines to construct ffmpeg options:
         ffmpeg_options = ""
-        if playback_rate != 1.0:
-            # Use the atempo filter for speed adjustment.
-            # Note: Very large/small values might require chaining (e.g., "atempo=2.0,atempo=2.0")
-            # Clamp the rate to a reasonable range (e.g., 0.5x to 3.0x) to prevent issues.
-            clamped_rate = max(0.5, min(playback_rate, 3.0))
-            ffmpeg_options = f'-filter:a "atempo={clamped_rate}"'
-            print(f"Setting playback rate to {clamped_rate}x (requested: {playback_rate}x) using options: {ffmpeg_options}")
         # End of added lines
 
         print(f"Playing TTS audio: {audio_path}")
         # Modify the vc.play call to include options:
         # vc.play(discord.FFmpegPCMAudio(audio_path))
-        vc.play(discord.FFmpegPCMAudio(audio_path, options=ffmpeg_options)) # Pass options here
+        vc.play(discord.FFmpegPCMAudio(audio_path))
 
         # **Wait for audio to finish before disconnecting**
         while vc.is_playing():
             await asyncio.sleep(1)  # Keep checking every second
 
         print("Finished playing TTS audio. Disconnecting...")
-        await vc.disconnect()
-        os.remove(audio_path) if os.path.exists(audio_path) else None  # Cleanup
 
     except discord.ClientException as e:
         print(f"Discord client error: {e}")
@@ -154,6 +145,7 @@ async def play_audio_in_vc(voice_channel: discord.VoiceChannel, audio_path: str,
     finally:
         if vc and vc.is_connected():
             await vc.disconnect()  # Ensure disconnection
+        os.remove(audio_path) if os.path.exists(audio_path) else None  # Cleanup
 
 
 
@@ -224,7 +216,15 @@ class WhisperSink(Sink):
                 await self.output_channel.send(f"**{user.name}**: {text}")
         except Exception as e:
             print(f"Error transcribing audio for {user.name}: {e}")
-            await self.output_channel.send(f"Error transcribing audio from {user.name}.")
+            # Clear the buffer if transcription fails
+            if text:
+                await self.output_channel.send(f"**{user.name}**: Transcription Error")
+            if user.id in self.user_audio_buffers:
+                self.user_audio_buffers[user.id] = bytearray()
+            return
+        finally:
+            if self.context_channel:
+                pass
 
     def cleanup(self):
         """Called when the sink is stopped."""
@@ -383,7 +383,7 @@ async def listen(ctx):
                      # vc.listen(BasicSink())
                      vc.listen(WhisperSink(ctx.channel)) # Pass callback
                      print(f"Restarted listening in {voice_channel.name}")
-                return
+                     return
             else:
                 # Move to the new channel if already connected elsewhere
                 print(f"Moving from {vc.channel.name} to {voice_channel.name}")
